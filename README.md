@@ -1,18 +1,9 @@
-<p align="center">
-  <a href="https://getartcraft.com/">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="docs/brand/artcraft-logo-white.svg">
-      <img alt="ArtCraft" src="docs/brand/artcraft-logo.svg" width="200">
-    </picture>
-  </a>
-</p>
-
-
-<h1 align="center">PrintCraft</h1>
+<h1 align="center">PrintCraft — verification fork</h1>
 
 <p align="center">
-  <b>The PDF workbench; an open-source, clean-room reimplementation of Adobe Acrobat, rebuilt in pure Rust.</b><br>
-  Read, organize, combine, split and secure PDFs in a fast, native app, written in Rust from the ground up.<br>
+  <b>The PDF workbench, focused on document verification.</b><br>
+  Everything upstream PrintCraft does, plus tools that check a document is safe to share:<br>
+  faux-redaction auditing and sanitize-for-sharing with a before/after report.<br>
   macOS · Windows · Linux · FreeBSD · the web
 </p>
 
@@ -35,6 +26,12 @@
 
 <br>
 
+> [!NOTE]
+> **Fork notice.** This is a security-focused fork of [storytold/printcraft](https://github.com/storytold/printcraft)
+> (MIT OR Apache-2.0) by [Erick Barraza](https://github.com/ejbarraza). Upstream built the workbench;
+> this fork adds document-verification tooling: faux-redaction auditing and sanitize-for-sharing.
+> The ArtCraft name and logos are trademarks of the ArtCraft team and are not used here.
+
 <p align="center">
   <img src="docs/images/printcraft-viewer.png" alt="PrintCraft with the PrintCraft Showcase cover page open, the All tools panel on the left and 20 threaded comments on the right" width="100%">
   <br>
@@ -47,6 +44,7 @@
 
 <p align="center">
   <a href="#highlights">Highlights</a> ·
+  <a href="#verify-before-you-share">Verify</a> ·
   <a href="#read-anything-beautifully">Read</a> ·
   <a href="#find-it-select-it-copy-it">Find</a> ·
   <a href="#organize-pages-like-cards-on-a-table">Organize</a> ·
@@ -97,6 +95,46 @@ No account, no telemetry, no cloud. It works offline and opens instantly. The en
 </td>
 </tr>
 </table>
+
+---
+
+## Verify before you share
+
+Drawing black boxes over text does **not** redact it — the text is often still in the file,
+one copy-paste away from anyone you send it to. This fork adds two tools for that problem.
+
+**Faux-redaction audit.** Finds opaque rectangles drawn over still-extractable text, and
+redaction marks (`/Redact` annotations) that were placed but never applied. Exits nonzero
+when findings exist, so it works as a CI gate:
+
+<p align="center">
+  <img src="docs/images/printcraft-faux-redaction-demo.png" alt="Left: a memo with black boxes over several lines. Right: the audit's findings, showing the exact text recovered from beneath each box" width="100%">
+  <br>
+  <sub>What you see (left) vs. what the audit recovers from under the black boxes (right). Demo document is fictional.</sub>
+</p>
+
+```bash
+printcraft-cli audit report.pdf
+# {"count":4,"findings":[
+#   {"kind":"covered-text","page":1,
+#    "covered_text":"Prepared by: Dana Whitfield, Compliance Office", ...},
+#   {"kind":"unapplied-mark","page":1,
+#    "covered_text":"Escalation contact: compliance@example.com", ...}]}
+```
+
+**Sanitize for sharing.** Strips hidden information — metadata, comments, attachments, hidden
+text and layers — and prints a human-readable report proving what was removed:
+
+```bash
+printcraft-cli sanitize draft.pdf --out draft-clean.pdf
+# removed metadata: Author=Erick Barraza
+# removed metadata: Title=Quarterly summary
+# removed comments and markups: 1 item(s)
+```
+
+Both are also available to agents through the automation tool table
+(`doc_audit_redactions`, `doc_sanitize_share`), and every claim above is covered by tests
+(`crates/audit`, `crates/automation/tests/automation.rs`).
 
 ---
 
@@ -437,6 +475,5 @@ Forks and modified versions must remove them.
 <sub>Adobe, Photoshop, Illustrator, Premiere Pro, Lightroom, Acrobat, After Effects and InDesign are trademarks or registered trademarks of Adobe Inc. in the United States and/or other countries. PrintCraft is an independent, open-source project and is not affiliated with, sponsored by or endorsed by Adobe Inc.; these names are used only to describe the workflows it is compatible with.</sub>
 
 <p align="center">
-  <a href="https://getartcraft.com/"><img alt="ArtCraft" src="docs/brand/artcraft-mark.svg" width="28"></a><br>
-  <sub>Made by the <a href="https://getartcraft.com/">ArtCraft</a> team and community.</sub>
+  <sub>Verification fork maintained by <a href="https://github.com/ejbarraza">Erick Barraza</a>, based on <a href="https://github.com/storytold/printcraft">storytold/printcraft</a>.</sub>
 </p>
