@@ -4,11 +4,12 @@
 use egui::Pos2;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
-use printcraft_ui_egui::{Dialog, PrintCraftApp};
+use pdfcraft_ui_egui::{Dialog, PdfCraftApp};
 
-fn harness() -> Harness<'static, PrintCraftApp> {
+fn harness() -> Harness<'static, PdfCraftApp> {
     let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_eframe(|_cc| {
-        let mut app = PrintCraftApp::new();
+        let mut app = PdfCraftApp::new();
+        app.set_option("language", "en").unwrap();
         app.open_bytes("form.pdf", None, include_bytes!("data/form.pdf").to_vec()).unwrap();
         app.set_option("zoom", "150").unwrap();
         app
@@ -23,13 +24,13 @@ fn harness() -> Harness<'static, PrintCraftApp> {
     h
 }
 
-fn at(h: &Harness<'static, PrintCraftApp>, x: f32, y: f32) -> Pos2 {
+fn at(h: &Harness<'static, PdfCraftApp>, x: f32, y: f32) -> Pos2 {
     let r = h.state().views[0].page_screen_rect(0).expect("on screen");
     let k = r.width() / 300.0;
     r.min + egui::vec2(x * k, y * k)
 }
 
-fn marks(h: &Harness<'static, PrintCraftApp>) -> usize {
+fn marks(h: &Harness<'static, PdfCraftApp>) -> usize {
     let s = h.state();
     s.session.get(s.views[0].id).unwrap().redaction_marks()
 }
@@ -80,6 +81,60 @@ fn marking_applying_and_clearing() {
 }
 
 #[test]
+fn redaction_codes_become_the_overlay_text() {
+    let mut h = harness();
+    assert!(h.state_mut().execute("redact.properties"));
+    h.run_steps(2);
+    h.get_by_label("Redaction Tool Properties");
+    h.get_by_label("Use overlay text").click();
+    h.run_steps(2);
+    h.state_mut().redact_prefs.overlay = "CONFIDENTIAL".into();
+    h.get_by_label("Redaction code:").click();
+    h.run_steps(2);
+    h.get_by_label("(b)(7)(C)").click();
+    h.run_steps(2);
+    h.get_by_label("(b)(6)").click();
+    h.run_steps(2);
+    h.get_by_label("OK").click();
+    h.run_steps(2);
+    let prefs = &h.state().redact_prefs;
+    assert_eq!(prefs.overlay_text(), "(b)(6), (b)(7)(C)", "codes in the set's order");
+    let pdfcraft_engine::Edit::AddAnnotation(a) = prefs.mark(0, vec![pdfcraft_engine::rect_quad([10.0, 10.0, 50.0, 30.0])], "T") else {
+        panic!("a mark adds an annotation")
+    };
+    assert!(matches!(a.shape, pdfcraft_engine::Shape::Redact { ref overlay, .. } if overlay == "(b)(6), (b)(7)(C)"));
+    h.state_mut().redact_prefs.use_code = false;
+    assert_eq!(h.state().redact_prefs.overlay_text(), "CONFIDENTIAL", "custom text is kept while codes are used");
+}
+
+#[test]
+fn redacting_an_imported_word_list() {
+    let memo = pdfcraft_engine::Session::new().create_from_text("memo", "Call Ada today\nAda is private\nPublic line").unwrap().to_vec();
+    let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_eframe(move |_cc| {
+        let mut app = PdfCraftApp::new();
+        app.set_option("language", "en").unwrap();
+        app.open_bytes("memo.pdf", None, memo.clone()).unwrap();
+        app
+    });
+    h.run_steps(4);
+    h.state_mut().execute("redact.search");
+    h.run_steps(2);
+    h.get_by_label("Multiple words or phrases");
+    let list = b"  Ada \n\nprivate\nAda\nabsent\n".to_vec();
+    h.state_mut().use_files(pdfcraft_ui_egui::FilePurpose::RedactWords, vec![("names.txt".into(), list)]);
+    let d = &h.state().redact_search;
+    assert_eq!((d.mode, d.words.as_str()), (pdfcraft_ui_egui::RedactSearchMode::Words, "Ada\nprivate\nabsent"));
+    h.run_steps(2);
+    h.get_by_label("3 word(s) or phrase(s)");
+    h.get_by_label("Mark all").click();
+    h.run_steps(3);
+    assert_eq!((marks(&h), h.state().redact_search.found), (3, Some(3)));
+    let too_big = vec![b'a'; 2 << 20];
+    h.state_mut().use_files(pdfcraft_ui_egui::FilePurpose::RedactWords, vec![("huge.txt".into(), too_big)]);
+    assert_eq!(h.state().redact_search.words, "Ada\nprivate\nabsent", "an oversized list changes nothing");
+}
+
+#[test]
 fn removing_hidden_information_and_sanitizing() {
     let mut h = harness();
     h.state_mut().execute("protect.remove_hidden");
@@ -87,7 +142,7 @@ fn removing_hidden_information_and_sanitizing() {
     h.get_by_label("Remove hidden information");
     {
         let d = &h.state().hidden_draft;
-        let fields = d.found.iter().find(|f| f.0 == printcraft_engine::Hidden::FormFields).unwrap();
+        let fields = d.found.iter().find(|f| f.0 == pdfcraft_engine::Hidden::FormFields).unwrap();
         assert_eq!((fields.1, fields.2), (5, true), "five fields, checked");
     }
     h.get_by_label("Remove").click();

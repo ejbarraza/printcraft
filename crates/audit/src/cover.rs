@@ -7,8 +7,8 @@
 //! read-only with a depth cap. Anything fancier (arbitrary filled paths, shadings, patterns) is
 //! out of scope and documented as such.
 
-use printcraft_content::{Matrix, parse};
-use printcraft_cos::{Dict, Document, Object};
+use pdfcraft_content::{Matrix, parse};
+use pdfcraft_cos::{Dict, Document, Object};
 
 /// Maximum form-XObject nesting followed (cyclic references are cut by the cap).
 const MAX_DEPTH: usize = 8;

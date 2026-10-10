@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use printcraft_cos::{SaveOptions, write_full};
+use pdfcraft_cos::{SaveOptions, write_full};
 
 use super::*;
 
@@ -84,6 +84,32 @@ fn images_become_pages_at_their_resolution() {
 }
 
 #[test]
+fn image_resolution_override_changes_size_without_resampling() {
+    let images = [("photo.png".into(), png_bytes(true)), ("scan.jpg".into(), jpeg_bytes())];
+    for (dpi, sizes) in [(72.0, [(4.0, 2.0), (3.0, 2.0)]), (300.0, [(0.96, 0.48), (0.72, 0.48)])] {
+        let doc = reopen(&from_images_with_resolution(&images, ImageResolution::Dpi(dpi)).unwrap());
+        for (page, size) in pages(&doc).iter().zip(sizes) {
+            let m = media(page);
+            assert!((m[2] - size.0).abs() < 0.001 && (m[3] - size.1).abs() < 0.001);
+            let res = doc.resolve(page.get(b"Resources").unwrap());
+            let xo = doc.resolve(res.as_dict().unwrap().get(b"XObject").unwrap());
+            let img = doc.resolve(xo.as_dict().unwrap().get(b"Im0").unwrap());
+            let Object::Stream(stream) = &*img else { panic!("expected an image stream") };
+            if stream.dict.name(b"Filter") == Some(&b"DCTDecode"[..]) {
+                assert_eq!(*stream.raw, jpeg_bytes());
+            } else {
+                assert_eq!(stream.dict.int(b"Width"), Some(4));
+                assert_eq!(stream.dict.int(b"Height"), Some(2));
+                assert!(stream.dict.contains(b"SMask"));
+            }
+        }
+    }
+    for dpi in [0.0, -1.0, f64::NAN, f64::INFINITY, 1201.0] {
+        assert!(matches!(from_images_with_resolution(&images, ImageResolution::Dpi(dpi)), Err(CreateError::Invalid(_))));
+    }
+}
+
+#[test]
 fn text_is_wrapped_and_paginated() {
     let long: String = (0..200).map(|i| format!("Line {i} of a plain text file\n")).collect();
     let doc = reopen(&from_text("notes", &format!("{long}\u{c}After a form feed"), LETTER, 11.0).unwrap());
@@ -142,6 +168,36 @@ fn bmp_gif_and_multi_page_tiff_images() {
     assert!(matches!(from_images(&[("x.webp".into(), b"RIFF0000WEBP".to_vec())]), Err(CreateError::Image(..))));
 }
 
+/// #665 lifted the tiff crate's 256 MiB decode limit; a few bytes claiming a 60000x60000 page
+/// (3.6 GB of gray pixels) must still be refused, not allocated.
+#[test]
+fn a_tiff_claiming_enormous_dimensions_is_refused() {
+    let entries: [(u16, u16, u32); 9] = [
+        (256, 4, 60_000), // ImageWidth
+        (257, 4, 60_000), // ImageLength
+        (258, 3, 8),      // BitsPerSample
+        (259, 3, 1),      // Compression: none
+        (262, 3, 1),      // BlackIsZero
+        (273, 4, 122),    // StripOffsets: just past the IFD
+        (277, 3, 1),      // SamplesPerPixel
+        (278, 4, 60_000), // RowsPerStrip
+        (279, 4, 1),      // StripByteCounts
+    ];
+    let mut tif = b"II*\0".to_vec();
+    tif.extend_from_slice(&8u32.to_le_bytes());
+    tif.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+    for (tag, kind, value) in entries {
+        tif.extend_from_slice(&tag.to_le_bytes());
+        tif.extend_from_slice(&kind.to_le_bytes());
+        tif.extend_from_slice(&1u32.to_le_bytes());
+        tif.extend_from_slice(&value.to_le_bytes());
+    }
+    tif.extend_from_slice(&0u32.to_le_bytes());
+    assert_eq!(tif.len(), 122);
+    tif.push(0);
+    assert!(matches!(from_images(&[("huge.tif".into(), tif)]), Err(CreateError::Image(..))));
+}
+
 #[test]
 fn images_export_as_jpeg_unchanged_and_others_as_png() {
     let doc = reopen(
@@ -168,7 +224,7 @@ fn images_export_as_jpeg_unchanged_and_others_as_png() {
 fn indexed_and_one_bit_images_decode() {
     let mut doc = from_images(&[("flat.png".into(), png_bytes(false))]).unwrap();
     // Replace the page's image with a 4×1 indexed image (two colours) and add a 1-bit mask.
-    let page = printcraft_model::pages(&doc)[0].clone();
+    let page = pdfcraft_model::pages(&doc)[0].clone();
     let res = doc.resolve(page.dict.get(b"Resources").unwrap()).as_dict().cloned().unwrap();
     let xo = doc.resolve(res.get(b"XObject").unwrap()).as_dict().cloned().unwrap();
     let (_, r) = xo.iter().next().map(|(k, v)| (k.clone(), v.as_ref().unwrap())).unwrap();
@@ -231,4 +287,119 @@ fn jpeg_2000_images_are_embedded_as_is() {
     }
     let doc = reopen(&from_images(&[("raw.j2k".into(), siz)]).unwrap());
     assert_eq!(media(&pages(&doc)[0])[2], 64.0);
+}
+
+#[test]
+fn source_kind_tells_pdfs_images_and_text_apart() {
+    assert_eq!(source_kind("a.bin", b"%PDF-1.7\n"), Some(SourceKind::Pdf));
+    assert_eq!(source_kind("a.txt", b"junk before\n%PDF-1.4"), Some(SourceKind::Pdf), "a header after leading junk");
+    assert_eq!(source_kind("a", &png_bytes(false)), Some(SourceKind::Image));
+    assert_eq!(source_kind("a.txt", &jpeg_bytes()), Some(SourceKind::Image), "bytes win over the name");
+    assert_eq!(source_kind("notes.TXT", b"hello"), Some(SourceKind::Text));
+    assert_eq!(source_kind("notes.text", b""), Some(SourceKind::Text));
+    // Text that merely starts like a BMP stays text; a truncated BMP header is not an image.
+    assert_eq!(source_kind("b.txt", b"BMW drivers"), Some(SourceKind::Text));
+    assert_eq!(source_kind("b.bmp", b"BM"), None);
+    assert_eq!(source_kind("a.docx", b"PK\x03\x04"), None);
+    assert_eq!(source_kind("", b""), None);
+}
+
+/// A synthetic ICC profile: a 128-byte header (size, device class, colour space, `acsp`) and
+/// some payload. Only the header is read.
+fn icc_profile(space: &[u8; 4]) -> Vec<u8> {
+    let mut p = vec![0u8; 300];
+    p[..4].copy_from_slice(&300u32.to_be_bytes());
+    p[12..16].copy_from_slice(b"prtr");
+    p[16..20].copy_from_slice(space);
+    p[36..40].copy_from_slice(b"acsp");
+    for (i, b) in p.iter_mut().enumerate().skip(128) {
+        *b = i as u8;
+    }
+    p
+}
+
+/// A minimal CMYK JPEG header (SOI, Adobe APP14, `profile` in two APP2 ICC_PROFILE chunks,
+/// SOF0 3×2 with four components, EOI).
+fn cmyk_jpeg_bytes(profile: &[u8]) -> Vec<u8> {
+    let mut v = vec![0xFF, 0xD8];
+    v.extend_from_slice(&[0xFF, 0xEE, 0, 14, b'A', b'd', b'o', b'b', b'e', 0, 100, 0, 0, 0, 0, 2]);
+    let (a, b) = profile.split_at(profile.len() / 2);
+    // Written out of order: the sequence numbers decide.
+    for (seq, part) in [(2u8, b), (1, a)] {
+        v.extend_from_slice(&[0xFF, 0xE2]);
+        v.extend_from_slice(&(2 + 14 + part.len() as u16).to_be_bytes());
+        v.extend_from_slice(b"ICC_PROFILE\0");
+        v.extend_from_slice(&[seq, 2]);
+        v.extend_from_slice(part);
+    }
+    v.extend_from_slice(&[0xFF, 0xC0, 0, 20, 8, 0, 2, 0, 3, 4, 1, 0x11, 0, 2, 0x11, 0, 3, 0x11, 0, 4, 0x11, 0]);
+    v.extend_from_slice(&[0xFF, 0xD9]);
+    v
+}
+
+/// The ICC profile behind an image's colour space: (`/N`, `/Alternate`, profile bytes, object).
+fn icc_of(doc: &Document, image: &Dict) -> Option<(i64, Vec<u8>, Vec<u8>, Object)> {
+    let cs = image.get(b"ColorSpace")?.as_array()?.clone();
+    assert_eq!(cs.first().and_then(Object::as_name), Some(&b"ICCBased"[..]));
+    let r = cs.get(1)?.clone();
+    let Object::Stream(s) = &*doc.resolve(&r) else { panic!("the ICC profile is not a stream") };
+    Some((s.dict.int(b"N")?, s.dict.name(b"Alternate")?.to_vec(), s.decoded().unwrap(), r))
+}
+
+#[test]
+fn embedded_icc_profiles_tag_the_image_colour_space() {
+    // A CMYK JPEG keeps its profile as /ICCBased (N 4), its data byte for byte and its Decode.
+    let cmyk = icc_profile(b"CMYK");
+    let jpeg = cmyk_jpeg_bytes(&cmyk);
+    let rgb = icc_profile(b"RGB ");
+    let png = {
+        let mut out = Vec::new();
+        let mut info = png::Info::with_size(2, 1);
+        info.color_type = png::ColorType::Rgb;
+        info.bit_depth = png::BitDepth::Eight;
+        info.icc_profile = Some(rgb.clone().into());
+        let mut w = png::Encoder::with_info(&mut out, info).unwrap().write_header().unwrap();
+        w.write_image_data(&[10, 20, 30, 40, 50, 60]).unwrap();
+        w.finish().unwrap();
+        out
+    };
+    let doc = reopen(&from_images(&[("a.jpg".into(), jpeg.clone()), ("b.jpg".into(), jpeg.clone()), ("c.png".into(), png)]).unwrap());
+    let (n, alt, data, first) = icc_of(&doc, &image_of(&doc, 0)).expect("the CMYK JPEG is ICC-tagged");
+    assert_eq!((n, alt.as_slice(), data), (4, &b"DeviceCMYK"[..], cmyk.clone()));
+    assert!(image_of(&doc, 0).contains(b"Decode"), "Adobe CMYK stays inverted");
+    let p = &pages(&doc)[0];
+    let res = doc.resolve(p.get(b"Resources").unwrap()).as_dict().cloned().unwrap();
+    let xo = doc.resolve(res.get(b"XObject").unwrap()).as_dict().cloned().unwrap();
+    let Object::Stream(s) = &*doc.resolve(xo.get(b"Im0").unwrap()) else { panic!() };
+    assert_eq!(*s.raw, jpeg, "the JPEG data is embedded as is");
+    let (_, _, _, second) = icc_of(&doc, &image_of(&doc, 1)).unwrap();
+    assert_eq!(first, second, "images with the same profile share one profile object");
+    // A PNG iCCP profile tags an RGB image (N 3).
+    let (n, alt, data, _) = icc_of(&doc, &image_of(&doc, 2)).expect("the PNG is ICC-tagged");
+    assert_eq!((n, alt.as_slice(), data), (3, &b"DeviceRGB"[..], rgb.clone()));
+    // The colour space is still exported as CMYK / RGB.
+    let out = extract_images(&doc, &[0, 1, 2], 0);
+    assert_eq!(out.images.len(), 3, "{:?}", out.skipped);
+
+    // A profile for another colour space, a damaged one or a missing chunk: the device space.
+    let mut no_acsp = cmyk.clone();
+    no_acsp[36] = b'x';
+    let missing_chunk = {
+        let mut v = cmyk_jpeg_bytes(&cmyk);
+        // Drop the first APP2 segment (sequence 2 of 2).
+        let at = v.windows(2).position(|w| w == [0xFF, 0xE2]).unwrap();
+        let len = u16::from_be_bytes([v[at + 2], v[at + 3]]) as usize;
+        v.drain(at..at + 2 + len);
+        v
+    };
+    for (what, bytes) in [("an RGB profile", cmyk_jpeg_bytes(&rgb)), ("no acsp", cmyk_jpeg_bytes(&no_acsp)), ("a missing chunk", missing_chunk)] {
+        let doc = reopen(&from_images(&[("x.jpg".into(), bytes)]).unwrap());
+        assert_eq!(image_of(&doc, 0).name(b"ColorSpace"), Some(&b"DeviceCMYK"[..]), "{what}");
+    }
+
+    // image_xobject (stamps, signatures, inserted images) tags its image the same way.
+    let mut doc = Document::new_empty();
+    let (r, _) = image_xobject(&mut doc, "a.jpg", &jpeg).unwrap();
+    let Object::Stream(s) = &*doc.get(r) else { panic!() };
+    assert_eq!(icc_of(&doc, &s.dict).map(|(n, ..)| n), Some(4));
 }

@@ -15,8 +15,8 @@
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
-use printcraft_cos::{Dict, Document};
-use printcraft_redact::sanitize::{HIDDEN, Hidden, sanitize, scan};
+use pdfcraft_cos::{Dict, Document};
+use pdfcraft_redact::sanitize::{HIDDEN, Hidden, sanitize, scan};
 
 mod cover;
 
@@ -58,11 +58,11 @@ pub enum AuditError {
     #[error("page {0}: {1}")]
     Text(usize, String),
     #[error(transparent)]
-    Cos(#[from] printcraft_cos::CosError),
+    Cos(#[from] pdfcraft_cos::CosError),
     #[error(transparent)]
-    Edit(#[from] printcraft_edit::EditError),
+    Edit(#[from] pdfcraft_edit::EditError),
     #[error(transparent)]
-    Redact(#[from] printcraft_redact::RedactError),
+    Redact(#[from] pdfcraft_redact::RedactError),
 }
 
 /// Fraction of a text line's area that must lie under a cover to count as hidden.
@@ -71,8 +71,8 @@ const COVER_FRACTION: f64 = 0.4;
 /// Audit every page for faux redactions and unapplied redaction marks.
 pub fn audit_redactions(doc: &Document) -> Result<Vec<AuditFinding>, AuditError> {
     let mut out = Vec::new();
-    for (n, page) in printcraft_model::pages(doc).iter().enumerate() {
-        let lines = printcraft_edit::text_lines(doc, n).map_err(|e| AuditError::Text(n, e.to_string()))?;
+    for (n, page) in pdfcraft_model::pages(doc).iter().enumerate() {
+        let lines = pdfcraft_edit::text_lines(doc, n).map_err(|e| AuditError::Text(n, e.to_string()))?;
         // 1. Opaque filled rectangles over extractable text.
         for r in cover::filled_rects(doc, &page.dict) {
             let mut covered = String::new();
@@ -126,16 +126,16 @@ fn covers(cover: &[f64; 4], line: &[f64; 4]) -> bool {
 /// Rectangles of `/Redact` annotations on a page (unrotated user space).
 fn annots(doc: &Document, page: &Dict) -> Vec<[f64; 4]> {
     let mut out = Vec::new();
-    let annots: Vec<printcraft_cos::Object> = match page.get(b"Annots") {
+    let annots: Vec<pdfcraft_cos::Object> = match page.get(b"Annots") {
         None => return out,
         Some(a) => match &*doc.resolve(a) {
-            printcraft_cos::Object::Array(items) => items.clone(),
+            pdfcraft_cos::Object::Array(items) => items.clone(),
             _ => return out,
         },
     };
     for a in &annots {
         let dict = match &*doc.resolve(a) {
-            printcraft_cos::Object::Dict(d) => d.clone(),
+            pdfcraft_cos::Object::Dict(d) => d.clone(),
             _ => continue,
         };
         if dict.name(b"Subtype") != Some(b"Redact") {
@@ -162,7 +162,7 @@ pub fn metadata_of(doc: &Document) -> Vec<(String, String)> {
             .get(key)
             .map(|o| doc.resolve(o))
             .and_then(|o| match &*o {
-                printcraft_cos::Object::String(s) => Some(s.to_text()),
+                pdfcraft_cos::Object::String(s) => Some(s.to_text()),
                 _ => None,
             })
             .unwrap_or_default();

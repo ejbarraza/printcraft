@@ -11,11 +11,11 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
-printcraft-cos = { workspace = true }
-printcraft-content = { workspace = true }
-printcraft-edit = { workspace = true }
-printcraft-redact = { workspace = true }
-printcraft-model = { workspace = true }
+pdfcraft-cos = { workspace = true }
+pdfcraft-content = { workspace = true }
+pdfcraft-edit = { workspace = true }
+pdfcraft-redact = { workspace = true }
+pdfcraft-model = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]

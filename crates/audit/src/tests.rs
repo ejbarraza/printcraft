@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use printcraft_cos::Document;
+use pdfcraft_cos::Document;
 
 use crate::{FindingKind, audit_redactions, sanitize_for_sharing};
 

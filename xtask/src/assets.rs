@@ -1,7 +1,7 @@
 //! `cargo xtask assets`: enforce the asset policy (AGENTS.md §1).
 //!
 //! `ATTRIBUTION.toml` lists every asset: committed or vendored files (`[[asset]]`), files that
-//! Cargo dependencies compile into PrintCraft (`[[bundled]]`), and files xtask downloads at build
+//! Cargo dependencies compile into PdfCraft (`[[bundled]]`), and files xtask downloads at build
 //! time (`[[fetched]]`). This gate fails when:
 //! - an asset-like file in the repository has no entry, or its SHA-256 differs;
 //! - a licence is not on the allowlist, or a declared licence file is missing;
@@ -46,7 +46,7 @@ pub const ADOBE_DATA_ALLOWED: &[(&str, &str)] = &[("hayro-cmap", "assets/cmaps.b
 /// File extensions that count as assets wherever they appear in the repository.
 const ASSET_EXTENSIONS: &[&str] = &[
     "png", "jpg", "jpeg", "gif", "svg", "ico", "icns", "webp", "bmp", "tif", "tiff", "avif", "heic", "ttf", "otf", "ttc", "woff", "woff2", "pfb",
-    "pfa", "afm", "icc", "icm", "pdf", "eps", "ps", "ai", "psd", "mp3", "wav", "ogg", "flac", "mp4", "mov", "webm", "cur", "ani", "brotli",
+    "pfa", "afm", "icc", "icm", "pdf", "eps", "ps", "ai", "psd", "mp3", "wav", "ogg", "flac", "mp4", "mov", "webm", "cur", "ani", "brotli", "tsv",
 ];
 
 #[derive(Deserialize, Default)]
@@ -221,7 +221,9 @@ fn mentions_adobe(s: &str) -> bool {
 pub fn check(root: &Path, m: &Manifest, repo_files: &[String], lock: &BTreeSet<(String, String)>) -> Vec<String> {
     let mut problems = Vec::new();
     let mut seen = BTreeSet::new();
-    let visual = |kind: &str| matches!(kind, "icon" | "image" | "font" | "logo" | "cursor" | "video");
+    // Kinds that may never come from Adobe (AGENTS.md §1.1): visual design, and UI translations
+    // (which must be clean-room, never taken from a product's string tables).
+    let visual = |kind: &str| matches!(kind, "icon" | "image" | "font" | "logo" | "cursor" | "video" | "translation");
     let licence_ok = |what: &str, licence: &str, problems: &mut Vec<String>| {
         for id in licence_ids(licence) {
             if !ALLOWED_LICENCES.contains(&id) {
@@ -334,7 +336,8 @@ fn fetch_verified(url: &str, path: &Path, sha256: &str) -> Result<()> {
 }
 
 /// `cargo xtask models [DIR]`: fetch the OCR models (`kind = "model"`) into `assets/models/` (git-ignored),
-/// where the app and tests look for them.
+/// where the app and tests look for them. Each comes with its licence (`<file>.LICENCE.txt`), and
+/// `ATTRIBUTION.txt` credits them all, so the release packages can ship the directory as it is.
 pub fn models(args: &[String]) -> Result<()> {
     let root = root();
     let m = load(&root)?;
@@ -342,7 +345,21 @@ pub fn models(args: &[String]) -> Result<()> {
     for p in fetch_all(&m, &dir, "model")? {
         println!("models: {}", p.display());
     }
+    std::fs::write(dir.join("ATTRIBUTION.txt"), models_attribution(&m))?;
     Ok(())
+}
+
+/// The credits shipped beside the models (their licences require attribution).
+fn models_attribution(m: &Manifest) -> String {
+    let mut s = String::from("PdfCraft's text recognition (Scan & OCR) uses these models, unmodified.\n");
+    for f in m.fetched.iter().filter(|f| f.kind == "model") {
+        let _ = write!(
+            s,
+            "\n{}\n  {}\n  by {}\n  from {}\n  licence: {} ({}; full text in {}.LICENCE.txt)\n",
+            f.file, f.title, f.author, f.source, f.licence, f.licence_url, f.file
+        );
+    }
+    s
 }
 
 /// ATTRIBUTION.md, generated from the manifest.
@@ -350,7 +367,7 @@ pub fn render_markdown(m: &Manifest) -> String {
     let mut s = String::new();
     s.push_str("# Attribution\n\n");
     s.push_str("<!-- Generated from ATTRIBUTION.toml by `cargo xtask assets --write`. Do not edit by hand. -->\n\n");
-    s.push_str("Every asset PrintCraft includes, bundles or uses to build its published material, with its author, source and licence. ");
+    s.push_str("Every asset PdfCraft includes, bundles or uses to build its published material, with its author, source and licence. ");
     s.push_str(
         "The policy is in [AGENTS.md](AGENTS.md) §1. The machine-readable list, with SHA-256 hashes, is [ATTRIBUTION.toml](ATTRIBUTION.toml). ",
     );
@@ -414,6 +431,18 @@ pub fn render_markdown(m: &Manifest) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The release packages ship assets/models as fetched (#103): every model is credited there.
+    #[test]
+    fn models_attribution_credits_every_model() {
+        let m = load(&root()).unwrap();
+        let text = models_attribution(&m);
+        let models: Vec<_> = m.fetched.iter().filter(|f| f.kind == "model").collect();
+        assert!(!models.is_empty());
+        for f in models {
+            assert!(text.contains(&f.file) && text.contains(&f.author) && text.contains(&f.licence), "{}", f.file);
+        }
+    }
 
     fn asset(path: &str, author: &str, kind: &str, licence: &str) -> Asset {
         Asset {
@@ -481,6 +510,15 @@ mod tests {
     fn unlisted_asset_is_rejected() {
         let p = check(&root(), &Manifest::default(), &["assets/icons/x.svg".into()], &lock(&[]));
         assert!(p.iter().any(|p| p.contains("no ATTRIBUTION.toml entry")), "{p:?}");
+    }
+
+    #[test]
+    fn translation_catalogs_require_attribution() {
+        assert!(is_asset_path("crates/ui-egui/src/i18n/ja.tsv"));
+        let p = check(&root(), &Manifest::default(), &["crates/ui-egui/src/i18n/ja.tsv".into()], &lock(&[]));
+        assert!(p.iter().any(|p| p.contains("no ATTRIBUTION.toml entry")), "{p:?}");
+        let m = Manifest { asset: vec![asset("crates/ui-egui/src/i18n/ja.tsv", "Adobe", "translation", "MIT")], ..Default::default() };
+        assert!(check(&root(), &m, &[], &lock(&[])).iter().any(|p| p.contains("from Adobe is forbidden")));
     }
 
     #[test]

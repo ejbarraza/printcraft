@@ -1,4 +1,4 @@
-//! printcraft-preflight — Standards: PDF/A (L4).
+//! pdfcraft-preflight — Standards: PDF/A (L4).
 //!
 //! [`verify`] checks a document against the parts of ISO 19005-2/-3 (PDF/A-2b, PDF/A-3b) that can
 //! be decided from the object graph:
@@ -24,7 +24,7 @@
 pub mod icc;
 mod xmp;
 
-use printcraft_cos::{Dict, Document, ObjRef, Object, PdfString, Stream};
+use pdfcraft_cos::{Dict, Document, ObjRef, Object, PdfString, Stream};
 
 /// The PDF/A part and conformance level.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -138,24 +138,73 @@ fn dict_of(o: &Object) -> Option<&Dict> {
 }
 
 fn has_pdfa_intent(doc: &Document) -> bool {
+    pdfa_intent_profile(doc).is_some()
+}
+
+/// The PDF/A output intent's destination profile: `Some(n)` with the profile's number of colour
+/// components (`/N`, else the ICC header's data colour space; `None` when neither says), or
+/// `None` when the document has no PDF/A output intent.
+fn pdfa_intent_profile(doc: &Document) -> Option<Option<i64>> {
     let cat = catalog(doc);
-    cat.get(b"OutputIntents")
-        .map(|o| doc.resolve(o))
-        .and_then(|o| o.as_array().cloned())
-        .unwrap_or_default()
-        .iter()
-        .any(|oi| doc.resolve(oi).as_dict().is_some_and(|d| d.name(b"S") == Some(b"GTS_PDFA1") && d.get(b"DestOutputProfile").is_some()))
+    let list = cat.get(b"OutputIntents").map(|o| doc.resolve(o)).and_then(|o| o.as_array().cloned()).unwrap_or_default();
+    list.iter().find_map(|oi| {
+        let d = doc.resolve(oi).as_dict().cloned()?;
+        if d.name(b"S") != Some(b"GTS_PDFA1") {
+            return None;
+        }
+        let profile = doc.resolve(d.get(b"DestOutputProfile")?);
+        let Object::Stream(s) = &*profile else { return Some(None) };
+        Some(s.dict.int(b"N").or_else(|| {
+            // ICC.1 header: the data colour space is bytes 16–19.
+            match s.decoded().ok()?.get(16..20)? {
+                b"GRAY" => Some(1),
+                b"RGB " => Some(3),
+                b"CMYK" => Some(4),
+                _ => None,
+            }
+        }))
+    })
+}
+
+/// Which device colour spaces the document uses.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct DeviceColour {
+    gray: bool,
+    rgb: bool,
+    cmyk: bool,
+    /// Resources that define `DefaultRGB` / `DefaultCMYK`: device colour there is drawn in that
+    /// space, which PDF/A accepts whatever the output intent (ISO 19005-2 6.2.4.3).
+    default_rgb: bool,
+    default_cmyk: bool,
+}
+
+impl DeviceColour {
+    fn any(self) -> bool {
+        self.gray || self.rgb || self.cmyk
+    }
 }
 
 /// Whether any content or object uses a device colour space.
-fn uses_device_colour(doc: &Document, objs: &[(ObjRef, std::sync::Arc<Object>)]) -> (bool, bool) {
-    let (mut rgb_or_gray, mut cmyk) = (false, false);
+fn uses_device_colour(doc: &Document, objs: &[(ObjRef, std::sync::Arc<Object>)]) -> DeviceColour {
+    let mut used = DeviceColour::default();
     for (_, o) in objs {
         let Some(d) = dict_of(o) else { continue };
+        // A resource dictionary's /ColorSpace, whether it is this object or the page's inline
+        // /Resources.
+        let resources = d.get(b"Resources").map(|r| doc.resolve(r)).and_then(|r| r.as_dict().cloned());
+        for holder in [Some(d), resources.as_ref()].into_iter().flatten() {
+            if let Some(spaces) = holder.get(b"ColorSpace").map(|c| doc.resolve(c))
+                && let Some(spaces) = spaces.as_dict()
+            {
+                used.default_rgb |= spaces.get(b"DefaultRGB").is_some();
+                used.default_cmyk |= spaces.get(b"DefaultCMYK").is_some();
+            }
+        }
         if let Some(cs) = d.get(b"ColorSpace").map(|c| doc.resolve(c)) {
             match &*cs {
-                Object::Name(n) if n == b"DeviceRGB" || n == b"DeviceGray" => rgb_or_gray = true,
-                Object::Name(n) if n == b"DeviceCMYK" => cmyk = true,
+                Object::Name(n) if n == b"DeviceGray" => used.gray = true,
+                Object::Name(n) if n == b"DeviceRGB" => used.rgb = true,
+                Object::Name(n) if n == b"DeviceCMYK" => used.cmyk = true,
                 _ => {}
             }
         }
@@ -167,14 +216,15 @@ fn uses_device_colour(doc: &Document, objs: &[(ObjRef, std::sync::Arc<Object>)])
             // Content streams: rg/RG/g/G/k/K operators.
             for line in data.split(|b| *b == b'\n' || *b == b' ') {
                 match line {
-                    b"rg" | b"RG" | b"g" | b"G" => rgb_or_gray = true,
-                    b"k" | b"K" => cmyk = true,
+                    b"g" | b"G" => used.gray = true,
+                    b"rg" | b"RG" => used.rgb = true,
+                    b"k" | b"K" => used.cmyk = true,
                     _ => {}
                 }
             }
         }
     }
-    (rgb_or_gray, cmyk)
+    used
 }
 
 /// Check `doc` against `level`.
@@ -204,12 +254,24 @@ pub fn verify(doc: &Document, level: Level) -> Vec<Issue> {
     }
     // 6.2.2: output intent when device colour is used.
     let objs = objects(doc);
-    let (rgb, cmyk) = uses_device_colour(doc, &objs);
-    if (rgb || cmyk) && !has_pdfa_intent(doc) {
-        issue("6.2.3", "Device colour is used, but there is no PDF/A output intent".into(), None, !cmyk);
-        if cmyk {
-            issue("6.2.4.3", "DeviceCMYK is used: it needs a CMYK output intent (not added automatically)".into(), None, false);
+    let used = uses_device_colour(doc, &objs);
+    match pdfa_intent_profile(doc) {
+        None if used.any() => {
+            issue("6.2.3", "Device colour is used, but there is no PDF/A output intent".into(), None, !used.cmyk);
+            if used.cmyk {
+                issue("6.2.4.3", "DeviceCMYK is used: it needs a CMYK output intent (not added automatically)".into(), None, false);
+            }
         }
+        // 6.2.4.3: DeviceRGB needs an RGB output intent and DeviceCMYK a CMYK one (#667).
+        Some(n) => {
+            if used.cmyk && !used.default_cmyk && n != Some(4) {
+                issue("6.2.4.3", "DeviceCMYK is used, but the PDF/A output intent isn't a CMYK profile".into(), None, false);
+            }
+            if used.rgb && !used.default_rgb && n != Some(3) {
+                issue("6.2.4.3", "DeviceRGB is used, but the PDF/A output intent isn't an RGB profile".into(), None, false);
+            }
+        }
+        None => {}
     }
     // 6.1.3 / 6.6.1: catalog actions.
     if cat.get(b"AA").is_some() {
@@ -226,7 +288,7 @@ pub fn verify(doc: &Document, level: Level) -> Vec<Issue> {
         issue("6.4.1", "The form asks viewers to make appearances (NeedAppearances)".into(), None, true);
     }
     // Pages: annotations and page actions.
-    let pages = printcraft_model::pages(doc);
+    let pages = pdfcraft_model::pages(doc);
     let page_of = |r: ObjRef| {
         pages.iter().position(|p| {
             p.dict
@@ -398,13 +460,13 @@ fn strip_actions(doc: &Document, d: &mut Dict) -> bool {
 }
 
 /// Make `doc` conform to `level` as far as possible, then re-check it.
-pub fn convert(doc: &mut Document, level: Level) -> Result<Report, printcraft_cos::CosError> {
+pub fn convert(doc: &mut Document, level: Level) -> Result<Report, pdfcraft_cos::CosError> {
     let mut fixed = Vec::new();
     if doc.trailer().get(b"Encrypt").is_some() {
         doc.remove_encryption();
         fixed.push("Removed encryption".into());
     }
-    let root = doc.root().ok_or(printcraft_cos::CosError::Syntax { offset: 0, detail: "no catalog".into() })?;
+    let root = doc.root().ok_or(pdfcraft_cos::CosError::Syntax { offset: 0, detail: "no catalog".into() })?;
     // Catalog: actions, JavaScript, NeedAppearances, output intent, metadata.
     let mut cat = catalog(doc);
     if cat.remove(b"AA").is_some() {
@@ -435,7 +497,9 @@ pub fn convert(doc: &mut Document, level: Level) -> Result<Report, printcraft_co
         cat.set(b"AcroForm".to_vec(), Object::Dict(af));
         fixed.push("Cleared NeedAppearances".into());
     }
-    if !has_pdfa_intent(doc) {
+    // An sRGB output intent describes RGB and gray content only: a document with CMYK content
+    // needs a CMYK output condition, which only the user can choose (#667).
+    if !has_pdfa_intent(doc) && !uses_device_colour(doc, &objects(doc)).cmyk {
         let mut icc = Dict::new();
         icc.set(b"N".to_vec(), Object::Int(3));
         let profile = doc.add(Object::Stream(Stream::flate(icc, &icc::srgb())));
@@ -462,7 +526,7 @@ pub fn convert(doc: &mut Document, level: Level) -> Result<Report, printcraft_co
 
     // Pages, annotations, fields, images, embedded files.
     let (mut actions, mut flags, mut images, mut removed, mut files) = (0, 0, 0, 0, 0);
-    for p in printcraft_model::pages(doc) {
+    for p in pdfcraft_model::pages(doc) {
         let mut changed = false;
         doc.update_dict(p.obj, |d| changed = d.remove(b"AA").is_some())?;
         actions += changed as usize;
@@ -474,7 +538,7 @@ pub fn convert(doc: &mut Document, level: Level) -> Result<Report, printcraft_co
         let is_annot = ty.as_deref() == Some(b"Annot");
         if is_annot && sub.as_deref().is_some_and(|s| FORBIDDEN_ANNOTS.contains(&s)) {
             // Take it off its page.
-            for p in printcraft_model::pages(doc) {
+            for p in pdfcraft_model::pages(doc) {
                 let annots = p.dict.get(b"Annots").map(|a| doc.resolve(a)).and_then(|a| a.as_array().cloned()).unwrap_or_default();
                 if annots.iter().any(|a| a.as_ref() == Some(r)) {
                     let kept: Vec<Object> = annots.into_iter().filter(|a| a.as_ref() != Some(r)).collect();
