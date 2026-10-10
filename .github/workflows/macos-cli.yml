@@ -1,0 +1,31 @@
+# One-off builder: macOS (Apple Silicon) pdfcraft-cli with this fork's
+# verification tools (audit / sanitize). Trigger from the Actions tab.
+name: macOS CLI build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: pdfcraft-cli (macOS aarch64)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: macos-cli
+      - name: Build
+        run: cargo build --release -p pdfcraft-cli
+      - name: Smoke test (audit --help path)
+        run: ./target/release/pdfcraft-cli audit 2>&1 | head -2; true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pdfcraft-cli-macos-aarch64
+          path: target/release/pdfcraft-cli
+          if-no-files-found: error
