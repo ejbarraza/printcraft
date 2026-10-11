@@ -465,8 +465,8 @@ impl Document {
 
     /// Verification: faux redactions (opaque covers over extractable text) and redaction
     /// marks that were never applied. Empty when the document cannot be read for editing.
-    pub fn audit_redactions(&self) -> Vec<printcraft_audit::AuditFinding> {
-        self.editor.as_ref().map(|e| printcraft_audit::audit_redactions(&e.cos).unwrap_or_default()).unwrap_or_default()
+    pub fn audit_redactions(&self) -> Vec<pdfcraft_audit::AuditFinding> {
+        self.editor.as_ref().map(|e| pdfcraft_audit::audit_redactions(&e.cos).unwrap_or_default()).unwrap_or_default()
     }
 
     /// Every page's media, crop, bleed, trim and art boxes (user space), for Set Page Boxes.

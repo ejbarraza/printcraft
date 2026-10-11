@@ -51,6 +51,7 @@ pub const TABLE: &[(&str, Class)] = &[
     ("xfa", Class::Layer(3)),
     ("ml", Class::Layer(3)),
     // L4 features
+    ("audit", Class::Layer(4)),
     ("edit", Class::Layer(4)),
     ("organize", Class::Layer(4)),
     ("security", Class::Layer(4)),
@@ -96,6 +97,8 @@ pub const STANDALONE_DEPS: &[(&str, &[&str])] = &[("cos", &["filters", "crypt", 
 /// Allowed same-layer edges (architecture §3 rule 1). `forms → js` is deliberately absent.
 pub const SIDEWAYS: &[(&str, &str)] = &[
     ("redact", "edit"),
+    ("audit", "edit"),
+    ("audit", "redact"),
     ("a11y", "preflight"),
     ("prepress", "preflight"),
     ("export", "ocr"),

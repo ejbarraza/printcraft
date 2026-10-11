@@ -3582,6 +3582,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "pdfcraft-audit"
+version = "0.5.0"
+dependencies = [
+ "pdfcraft-content",
+ "pdfcraft-cos",
+ "pdfcraft-edit",
+ "pdfcraft-model",
+ "pdfcraft-redact",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "pdfcraft-automation"
 version = "0.5.0"
 dependencies = [
@@ -3603,11 +3615,11 @@ name = "pdfcraft-cli"
 version = "0.5.0"
 dependencies = [
  "base64 0.22.1",
+ "pdfcraft-audit",
  "pdfcraft-automation",
  "pdfcraft-cos",
  "pdfcraft-engine",
  "pdfcraft-render",
- "printcraft-audit",
  "rustix 1.1.5",
  "serde_json",
  "winresource",
@@ -3686,6 +3698,7 @@ dependencies = [
  "image",
  "pdfcraft-a11y",
  "pdfcraft-annot",
+ "pdfcraft-audit",
  "pdfcraft-compare",
  "pdfcraft-cos",
  "pdfcraft-create",
@@ -3707,7 +3720,6 @@ dependencies = [
  "pdfcraft-xfa",
  "pdfcraft-xfdf",
  "png 0.18.1",
- "printcraft-audit",
  "thiserror 2.0.21",
  "url",
 ]
@@ -4307,18 +4319,6 @@ dependencies = [
  "primefield",
  "serdect",
  "wnaf",
-]
-
-[[package]]
-name = "printcraft-audit"
-version = "0.5.0"
-dependencies = [
- "pdfcraft-content",
- "pdfcraft-cos",
- "pdfcraft-edit",
- "pdfcraft-model",
- "pdfcraft-redact",
- "thiserror 2.0.21",
 ]
 
 [[package]]

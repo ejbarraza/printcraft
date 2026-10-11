@@ -19,7 +19,7 @@ pdfcraft-forms = { workspace = true }
 pdfcraft-xfa = { workspace = true }
 pdfcraft-edit = { workspace = true }
 pdfcraft-redact = { workspace = true }
-printcraft-audit = { workspace = true }
+pdfcraft-audit = { workspace = true }
 pdfcraft-print = { workspace = true }
 pdfcraft-xfdf = { workspace = true }
 pdfcraft-sign = { workspace = true }

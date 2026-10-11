@@ -1,5 +1,5 @@
 [package]
-name = "printcraft-audit"
+name = "pdfcraft-audit"
 description = "Verification tooling: audit documents for faux redactions (opaque covers over extractable text) and sanitize-for-sharing reports with before/after diffs"
 version.workspace = true
 edition.workspace = true

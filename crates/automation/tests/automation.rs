@@ -2119,7 +2119,9 @@ fn faux_redacted_fixture() -> Vec<u8> {
 
 #[test]
 fn auditing_faux_redactions_through_tools() {
-    let dir = workdir("audit");
+    // NOTE: must not share workdir("audit") with auditing_space_through_tools;
+    // both tests run in parallel in one process and workdir() wipes the dir.
+    let dir = workdir("audit-faux-redactions");
     std::fs::write(dir.join("redacted.pdf"), faux_redacted_fixture()).unwrap();
     let mut a = auto(&dir);
     let doc = ok(&mut a, "doc_open", json!({ "path": "redacted.pdf" }))["doc"].as_u64().unwrap();

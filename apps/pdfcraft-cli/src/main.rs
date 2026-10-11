@@ -668,7 +668,7 @@ fn audit(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let findings = match printcraft_audit::audit_redactions(&doc) {
+    let findings = match pdfcraft_audit::audit_redactions(&doc) {
         Ok(f) => f,
         Err(e) => {
             eprintln!("pdfcraft-cli: {path}: {e}");
@@ -701,7 +701,7 @@ fn sanitize(args: &[String]) -> Result<(), CliError> {
     let path = *positional(args).first().ok_or("sanitize: missing file")?;
     let out = flag(args, "--out").ok_or("sanitize: missing --out")?;
     let mut doc = pdfcraft_cos::Document::open_with_password(read(path)?, flag(args, "--password")).map_err(|e| format!("{path}: {e}"))?;
-    let report = printcraft_audit::sanitize_for_sharing(&mut doc).map_err(|e| e.to_string())?;
+    let report = pdfcraft_audit::sanitize_for_sharing(&mut doc).map_err(|e| e.to_string())?;
     let bytes = pdfcraft_cos::write_full(&doc, &pdfcraft_cos::SaveOptions::default()).map_err(|e| e.to_string())?;
     std::fs::write(out, bytes.as_slice()).map_err(|e| format!("{out}: {e}"))?;
     let json = serde_json::json!({

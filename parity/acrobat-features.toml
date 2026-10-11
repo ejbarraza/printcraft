@@ -5735,7 +5735,7 @@ status = "shipped"
 commands = []
 tools = ["doc_audit_redactions"]
 evidence = ["crates/audit/src/tests.rs::faux_redaction_is_found", "crates/audit/src/tests.rs::unapplied_redact_mark_is_found", "crates/audit/src/tests.rs::clean_document_has_no_findings"]
-notes = "Fork addition (ejbarraza/printcraft): new printcraft-audit crate. Flags filled rectangles (re + fill, opaque) covering extractable text and /Redact annotations never applied; translucent covers are not flagged. A properly applied redaction removes the text and never flags."
+notes = "Fork addition (ejbarraza/printcraft): new pdfcraft-audit crate. Flags filled rectangles (re + fill, opaque) covering extractable text and /Redact annotations never applied; translucent covers are not flagged. A properly applied redaction removes the text and never flags."
 
 [[feature]]
 id = "protect.sanitize-share-report"

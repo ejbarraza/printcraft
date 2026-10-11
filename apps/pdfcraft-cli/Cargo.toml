@@ -17,7 +17,7 @@ pdfcraft-render = { workspace = true }
 serde_json = { workspace = true }
 pdfcraft-engine = { workspace = true }
 pdfcraft-cos = { workspace = true }
-printcraft-audit = { workspace = true }
+pdfcraft-audit = { workspace = true }
 pdfcraft-automation = { workspace = true }
 base64 = "0.22"
 
