@@ -1,21 +1,32 @@
-//! Verification tooling for PDF documents.
+//! Verification tooling: audit a document for faux redactions, and sanitize it for sharing.
 //!
-//! Two checks that upstream PrintCraft does not do:
+//! [`audit_redactions`] finds *faux redactions* — opaque filled rectangles drawn over text
+//! that is still extractable underneath — and redaction annotations that were marked but
+//! never applied. A properly applied redaction removes the text, so it never flags.
 //!
-//! - [`audit_redactions`]: find *faux redactions* — opaque filled rectangles drawn over text
-//!   that is still extractable underneath — and redaction annotations that were marked but
-//!   never applied. A properly applied redaction removes the text, so it never flags.
-//! - [`sanitize_for_sharing`]: run the full hidden-information removal and return a
-//!   human-readable before/after diff proving what was removed.
+//! [`sanitize_for_sharing`] (fork addition) removes hidden information and returns a
+//! human-readable before/after report proving what was removed.
+//!
+//! A rectangle counts as a cover only when it was painted strictly *after* the text it
+//! overlaps, and only when it is dark enough against the text's color to make the text
+//! unreadable (WCAG contrast below 3.0). Page backgrounds, table shading and highlight
+//! marks are therefore not flagged.
 //!
 //! Detection limits (documented, not hidden): only `re` rectangles closed by a fill operator
 //! are considered — arbitrary filled paths, shadings and patterns are not; a rectangle drawn
 //! with a translucent ExtGState (`/ca < 1`) is not flagged; annotation rectangles are compared
-//! in unrotated user space, so pages with `/Rotate` may misalign.
+//! in unrotated user space, so pages with `/Rotate` may misalign; covers inside form XObjects
+//! are found, but only text drawn directly in the page content is checked under them, so text
+//! inside a form XObject is not audited.
+//!
+//! The audit fails closed: any content that cannot be read (an undecodable content stream,
+//! malformed annotations, form XObjects nested deeper than 32 or in a cycle) is an error, never
+//! an empty finding list.
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 use pdfcraft_cos::{Dict, Document};
+use pdfcraft_edit::TextLine;
 use pdfcraft_redact::sanitize::{HIDDEN, Hidden, sanitize, scan};
 
 mod cover;
@@ -57,6 +68,12 @@ pub struct AuditFinding {
 pub enum AuditError {
     #[error("page {0}: {1}")]
     Text(usize, String),
+    #[error("content walk exceeded the operator bound")]
+    TooManyOps,
+    #[error("form XObjects nest deeper than the audit follows")]
+    TooDeep,
+    #[error("page has a malformed /Annots entry")]
+    BadAnnots,
     #[error(transparent)]
     Cos(#[from] pdfcraft_cos::CosError),
     #[error(transparent)]
@@ -67,17 +84,20 @@ pub enum AuditError {
 
 /// Fraction of a text line's area that must lie under a cover to count as hidden.
 const COVER_FRACTION: f64 = 0.4;
+/// WCAG contrast ratio below which the text is unreadable against the cover.
+const COVER_CONTRAST: f64 = 3.0;
 
-/// Audit every page for faux redactions and unapplied redaction marks.
+/// Audit every page for faux redactions and unapplied redaction marks. Fails closed: any
+/// content that cannot be decoded is returned as an error, never as an empty finding list.
 pub fn audit_redactions(doc: &Document) -> Result<Vec<AuditFinding>, AuditError> {
     let mut out = Vec::new();
     for (n, page) in pdfcraft_model::pages(doc).iter().enumerate() {
         let lines = pdfcraft_edit::text_lines(doc, n).map_err(|e| AuditError::Text(n, e.to_string()))?;
         // 1. Opaque filled rectangles over extractable text.
-        for r in cover::filled_rects(doc, &page.dict) {
+        for r in cover::filled_rects(doc, &page.dict)? {
             let mut covered = String::new();
             for line in &lines {
-                if covers(&r.rect, &line.rect) {
+                if is_cover(&r, line) {
                     if !covered.is_empty() {
                         covered.push(' ');
                     }
@@ -89,7 +109,7 @@ pub fn audit_redactions(doc: &Document) -> Result<Vec<AuditFinding>, AuditError>
             }
         }
         // 2. Redact annotations that were never applied.
-        for annot in annots(doc, &page.dict) {
+        for annot in annots(doc, &page.dict)? {
             let mut covered = String::new();
             for line in &lines {
                 if covers(&annot, &line.rect) {
@@ -105,6 +125,14 @@ pub fn audit_redactions(doc: &Document) -> Result<Vec<AuditFinding>, AuditError>
         }
     }
     Ok(out)
+}
+
+/// A filled rectangle is a faux-redaction cover for a text line iff it was painted strictly
+/// after the line, overlaps it substantially, and is dark enough against the line's color to
+/// make the text unreadable. Light covers (table shading, highlights) over dark text fail the
+/// contrast check and are not flagged.
+fn is_cover(rect: &cover::FilledRect, line: &TextLine) -> bool {
+    rect.pos > line.paint_pos() && covers(&rect.rect, &line.rect) && contrast(line.color, rect.rgb) < COVER_CONTRAST
 }
 
 /// Does `cover` hide a substantial part of `line`?
@@ -123,17 +151,34 @@ fn covers(cover: &[f64; 4], line: &[f64; 4]) -> bool {
     (ix1 - ix0) * (iy1 - iy0) / line_area >= COVER_FRACTION
 }
 
-/// Rectangles of `/Redact` annotations on a page (unrotated user space).
-fn annots(doc: &Document, page: &Dict) -> Vec<[f64; 4]> {
-    let mut out = Vec::new();
-    let annots: Vec<pdfcraft_cos::Object> = match page.get(b"Annots") {
-        None => return out,
-        Some(a) => match &*doc.resolve(a) {
-            pdfcraft_cos::Object::Array(items) => items.clone(),
-            _ => return out,
-        },
+/// WCAG 2.x relative luminance of an sRGB triple.
+fn luminance(rgb: [f64; 3]) -> f64 {
+    let lin = rgb.map(|c| {
+        let c = c.clamp(0.0, 1.0);
+        if c <= 0.03928 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+    });
+    0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]
+}
+
+/// WCAG contrast ratio between two sRGB colors: 1.0 (identical) to 21.0 (black on white).
+fn contrast(a: [f64; 3], b: [f64; 3]) -> f64 {
+    let (l1, l2) = (luminance(a), luminance(b));
+    let (hi, lo) = if l1 > l2 { (l1, l2) } else { (l2, l1) };
+    (hi + 0.05) / (lo + 0.05)
+}
+
+/// Rectangles of `/Redact` annotations on a page (unrotated user space). A missing `/Annots`
+/// means no marks; a malformed one fails the audit rather than silently passing.
+fn annots(doc: &Document, page: &Dict) -> Result<Vec<[f64; 4]>, AuditError> {
+    let Some(a) = page.get(b"Annots") else { return Ok(Vec::new()) };
+    let resolved = doc.resolve(a);
+    let items: Vec<pdfcraft_cos::Object> = match &*resolved {
+        pdfcraft_cos::Object::Array(items) => items.clone(),
+        // A missing /Annots means no marks; a malformed one fails the audit.
+        _ => return Err(AuditError::BadAnnots),
     };
-    for a in &annots {
+    let mut out = Vec::new();
+    for a in &items {
         let dict = match &*doc.resolve(a) {
             pdfcraft_cos::Object::Dict(d) => d.clone(),
             _ => continue,
@@ -149,10 +194,8 @@ fn annots(doc: &Document, page: &Dict) -> Vec<[f64; 4]> {
             out.push([v[0].min(v[2]), v[1].min(v[3]), v[0].max(v[2]), v[1].max(v[3])]);
         }
     }
-    out
+    Ok(out)
 }
-
-/// The `/Info` string entries of a document, for before/after comparison.
 pub fn metadata_of(doc: &Document) -> Vec<(String, String)> {
     const KEYS: [&[u8]; 8] = [b"Title", b"Author", b"Subject", b"Keywords", b"Creator", b"Producer", b"CreationDate", b"ModDate"];
     let info = doc.trailer().get(b"Info").map(|o| doc.resolve(o)).and_then(|o| o.as_dict().cloned()).unwrap_or_default();

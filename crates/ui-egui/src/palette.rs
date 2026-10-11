@@ -5,7 +5,7 @@ use egui::{Align2, CornerRadius, Rect, Sense, Stroke, vec2};
 use pdfcraft_engine::catalog::{Availability, TOOL_GROUPS};
 
 use crate::theme::{self, Tokens};
-use crate::{LeftPanel, PdfCraftApp, icons};
+use crate::{PdfCraftApp, icons};
 
 struct Hit {
     /// The tool panel to open (tools and catalogue items); `None` for plain commands.
@@ -17,11 +17,12 @@ struct Hit {
     ready: bool,
 }
 
+/// Where `needle` (folded with [`pdfcraft_render::text::fold_case`]) matches `hay`, for ranking.
 fn score(hay: &str, needle: &str) -> Option<usize> {
     if needle.is_empty() {
         return Some(0);
     }
-    let h = hay.to_lowercase();
+    let h = pdfcraft_render::text::fold_case(hay);
     if let Some(p) = h.find(needle) {
         return Some(p);
     }
@@ -48,9 +49,8 @@ pub fn show(app: &mut PdfCraftApp, ctx: &egui::Context) {
         app.palette_open = false;
         return;
     }
-    let q = app.palette_query.trim().to_lowercase();
+    let q = pdfcraft_render::text::fold_case(app.palette_query.trim());
     let mut hits: Vec<(usize, Hit)> = Vec::new();
-    let mac = cfg!(target_os = "macos") || cfg!(target_arch = "wasm32");
     let active = app.active_ids().map(|(_, id)| id);
     for spec in pdfcraft_engine::commands::COMMANDS {
         let label = pdfcraft_engine::commands::current_label(spec, &app.session, active);
@@ -61,7 +61,10 @@ pub fn show(app: &mut PdfCraftApp, ctx: &egui::Context) {
                 Hit {
                     group: None,
                     label: translated,
-                    detail: spec.shortcut.map(|k| k.label(mac)).unwrap_or_else(|| tl!(spec.menu.unwrap_or("Command")).to_string()),
+                    detail: spec
+                        .shortcut
+                        .map(|k| crate::commands::shortcut_label(ctx, k))
+                        .unwrap_or_else(|| tl!(spec.menu.unwrap_or("Command")).to_string()),
                     icon: spec.icon,
                     command: Some(spec.id),
                     ready: app.command_enabled(spec),
@@ -182,11 +185,25 @@ pub fn show(app: &mut PdfCraftApp, ctx: &egui::Context) {
         app.palette_open = false;
         app.palette_query.clear();
         if let Some(g) = group {
-            app.left_open = true;
-            app.left = LeftPanel::Tool(g);
+            app.select_tool(g);
         }
         if let Some(c) = command {
             app.run_command(c);
         }
+    }
+}
+
+#[cfg(test)]
+mod search {
+    use super::score;
+    use pdfcraft_render::text::fold_case;
+
+    #[test]
+    fn commands_match_in_any_case_with_turkish_i() {
+        assert_eq!(score("İçe aktar", &fold_case("içe")), Some(0));
+        assert_eq!(score("Yazdır", &fold_case("YAZDIR")), Some(0));
+        assert_eq!(score("Insert Pages", &fold_case("ınsert")), Some(0));
+        assert_eq!(score("Print", &fold_case("print")), Some(0));
+        assert_eq!(score("Print", &fold_case("zz")), None);
     }
 }

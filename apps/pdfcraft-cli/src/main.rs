@@ -55,7 +55,7 @@ pdfcraft-cli combine <a.pdf> <b.pdf> … --out combined.pdf
 pdfcraft-cli extract <in.pdf> --pages 1,3,5 --out out.pdf
 pdfcraft-cli split   <in.pdf> (--every N | --before 3,7) [--out-dir DIR]
 pdfcraft-cli check  <files or dirs…> [--timeout 20] [--dpi 36] [--json out.json]
-pdfcraft-cli audit  <file.pdf> [--password PW]            find faux redactions (exit 1 when found)
+pdfcraft-cli audit  <file.pdf> [--password PW]            find faux redactions (fails when found)
 pdfcraft-cli sanitize <in.pdf> --out out.pdf [--password PW]
                                                       remove hidden info, print before/after diff
 pdfcraft-cli tools                                       automation tools and their JSON Schemas
@@ -88,7 +88,7 @@ fn main() -> ExitCode {
         Some("split") => split(&args[1..]),
         Some("check") => check(&args[1..]),
         Some("check-one") => check_one(&args[1..]),
-        Some("audit") => return audit(&args[1..]),
+        Some("audit") => audit(&args[1..]),
         Some("sanitize") => sanitize(&args[1..]),
         Some("tools") => tools(),
         Some("run") => run(&args[1..]),
@@ -151,6 +151,28 @@ fn version() -> Result<(), CliError> {
     Ok(())
 }
 
+/// Audit a document for faux redactions. Prints the findings as JSON; fails when any are
+/// found so scripts and CI can gate on it, and when the audit itself cannot run.
+fn audit(args: &[String]) -> Result<(), CliError> {
+    let path = *positional(args).first().ok_or("audit: missing file")?;
+    let bytes = read(path)?;
+    let doc = pdfcraft_cos::Document::open_with_password(bytes, flag(args, "--password")).map_err(|e| format!("{path}: {e}"))?;
+    let findings = pdfcraft_audit::audit_redactions(&doc).map_err(|e| format!("{path}: {e}"))?;
+    let items: Vec<serde_json::Value> = findings
+        .into_iter()
+        .map(|f| {
+            serde_json::json!({
+                "page": f.page + 1,
+                "kind": f.kind.id(),
+                "rect": f.rect,
+                "covered_text": f.covered_text,
+            })
+        })
+        .collect();
+    println!("{}", serde_json::json!({ "file": path, "findings": items, "count": items.len() }));
+    if items.is_empty() { Ok(()) } else { Err(format!("audit: {} faux redaction(s) found", items.len()).into()) }
+}
+
 fn flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
     args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).map(String::as_str)
 }
@@ -161,15 +183,29 @@ struct OptionSpec {
     takes_value: bool,
 }
 
-/// Refuse a long option `command` doesn't take (a misspelling) before any file is read.
+/// Refuse unknown options and malformed confinement flags before any file is read.
 fn validate_options(command: &str, args: &[String], specs: &[OptionSpec]) -> Result<(), CliError> {
+    if specs.iter().any(|spec| spec.name == "--root") {
+        // `flag` searches every token, including another option's value. Match that lookup so
+        // a malformed confinement flag cannot be hidden there and fall back to no root.
+        let mut root_seen = false;
+        for (i, _) in args.iter().enumerate().filter(|(_, arg)| arg.as_str() == "--root") {
+            if root_seen {
+                return Err(format!("{command}: --root may only be supplied once").into());
+            }
+            root_seen = true;
+            if args.get(i + 1).is_none_or(|value| value.is_empty() || value.starts_with("--")) {
+                return Err(format!("{command}: --root needs a directory value").into());
+            }
+        }
+    }
     let mut i = 0;
     while let Some(arg) = args.get(i) {
         if let Some(name) = arg.strip_prefix("--") {
             let Some(spec) = specs.iter().find(|spec| spec.name == arg) else {
                 return Err(format!("{command}: unknown option --{name}").into());
             };
-            // A missing or malformed value is left to the command, which reports it in its own
+            // Other missing or malformed values are left to the command, which reports them in its own
             // terms (`text` and `extract` explain what a page value must be).
             i += if spec.takes_value { 2 } else { 1 };
         } else {
@@ -639,59 +675,6 @@ fn run_child(exe: &Path, file: &Path, dpi: &str, timeout: Duration) -> serde_jso
             Ok(None) => std::thread::sleep(Duration::from_millis(20)),
             Err(e) => return serde_json::json!({ "file": file_s, "status": "harness-error", "detail": e.to_string() }),
         }
-    }
-}
-
-// ---- verification (faux-redaction audit, sanitize-for-sharing) --------------------------------
-
-/// Audit a document for faux redactions. Prints the findings as JSON; exits 1 when any are
-/// found so scripts and CI can gate on it, 0 when the document is clean.
-fn audit(args: &[String]) -> ExitCode {
-    let path = match positional(args).first() {
-        Some(p) => *p,
-        None => {
-            eprintln!("pdfcraft-cli: audit: missing file");
-            return ExitCode::FAILURE;
-        }
-    };
-    let bytes = match read(path) {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!("pdfcraft-cli: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let doc = match pdfcraft_cos::Document::open_with_password(bytes, flag(args, "--password")) {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("pdfcraft-cli: {path}: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let findings = match pdfcraft_audit::audit_redactions(&doc) {
-        Ok(f) => f,
-        Err(e) => {
-            eprintln!("pdfcraft-cli: {path}: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let items: Vec<serde_json::Value> = findings
-        .into_iter()
-        .map(|f| {
-            serde_json::json!({
-                "page": f.page + 1,
-                "kind": f.kind.id(),
-                "rect": f.rect,
-                "covered_text": f.covered_text,
-            })
-        })
-        .collect();
-    println!("{}", serde_json::json!({ "file": path, "findings": items, "count": items.len() }));
-    if items.is_empty() {
-        ExitCode::SUCCESS
-    } else {
-        eprintln!("pdfcraft-cli: audit: {} faux redaction(s) found", items.len());
-        ExitCode::FAILURE
     }
 }
 

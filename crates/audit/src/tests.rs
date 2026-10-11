@@ -7,8 +7,7 @@ use pdfcraft_cos::Document;
 
 use crate::{FindingKind, audit_redactions, sanitize_for_sharing};
 
-/// Minimal PDF assembler: objects are numbered 1..=n in order; the last object may be the
-/// document information dictionary when `info` is set.
+/// Minimal PDF assembler: objects are numbered 1..=n in order.
 struct Builder {
     objects: Vec<Vec<u8>>,
     info: Option<usize>,
@@ -25,7 +24,11 @@ impl Builder {
     }
 
     fn add_stream(&mut self, data: &[u8]) -> usize {
-        let mut body = format!("<< /Length {} >>\nstream\n", data.len()).into_bytes();
+        self.add_stream_with(data, "")
+    }
+
+    fn add_stream_with(&mut self, data: &[u8], dict_extra: &str) -> usize {
+        let mut body = format!("<< /Length {} {dict_extra} >>\nstream\n", data.len()).into_bytes();
         body.extend_from_slice(data);
         body.extend_from_slice(b"\nendstream");
         self.objects.push(body);
@@ -72,6 +75,29 @@ fn one_page(content: &[u8], page_extra: &str) -> Vec<u8> {
         "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents {stream_num} 0 R /Resources << /Font << /F1 5 0 R >> >> {page_extra} >>"
     ));
     b.add_stream(content);
+    b.add(FONT);
+    b.build()
+}
+
+/// One page with two content streams (`/Contents [4 0 R 5 0 R]`).
+fn two_streams(s1: &[u8], s2: &[u8]) -> Vec<u8> {
+    let mut b = Builder::new();
+    b.add("<< /Type /Catalog /Pages 2 0 R >>");
+    b.add("<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+    b.add("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents [4 0 R 5 0 R] /Resources << /Font << /F1 6 0 R >> >> >>");
+    b.add_stream(s1);
+    b.add_stream(s2);
+    b.add(FONT);
+    b.build()
+}
+
+/// One page whose content stream claims `/FlateDecode` but holds garbage: decoding must fail.
+fn bad_filter_page() -> Vec<u8> {
+    let mut b = Builder::new();
+    b.add("<< /Type /Catalog /Pages 2 0 R >>");
+    b.add("<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+    b.add("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>");
+    b.add_stream_with(b"this is not deflated data", "/Filter /FlateDecode");
     b.add(FONT);
     b.build()
 }
@@ -139,6 +165,58 @@ fn unapplied_redact_mark_is_found() {
     assert!(findings[0].covered_text.contains("DO NOT SHARE"));
 }
 
+#[test]
+fn background_before_text_is_not_flagged() {
+    // An opaque dark rectangle painted *before* the text is a background, not a cover.
+    let content = b"0 g\n100 688 220 32 re f\nBT /F1 24 Tf 100 700 Td (SECRET DATA 123) Tj ET\n";
+    let findings = audit_redactions(&open(one_page(content, ""))).expect("audit must run");
+    assert!(findings.is_empty(), "{findings:?}");
+}
+
+#[test]
+fn light_shading_after_text_is_not_flagged() {
+    // Light table-style shading painted after the text leaves it readable: not a cover.
+    let content = b"BT /F1 24 Tf 100 700 Td (SECRET DATA 123) Tj ET\n0.9 g\n100 688 220 32 re f\n";
+    let findings = audit_redactions(&open(one_page(content, ""))).expect("audit must run");
+    assert!(findings.is_empty(), "{findings:?}");
+}
+
+#[test]
+fn graphics_state_carries_across_streams() {
+    // The first stream sets a white fill after the text; the second stream's rectangle over
+    // the text is therefore white, not the default black: no finding. Without the carry fix
+    // the rectangle would default to black and flag.
+    let s1 = b"BT /F1 24 Tf 100 700 Td (SECRET DATA 123) Tj ET\n1 g\n";
+    let s2 = b"100 688 220 32 re f\n";
+    let findings = audit_redactions(&open(two_streams(s1, s2))).expect("audit must run");
+    assert!(findings.is_empty(), "{findings:?}");
+}
+
+#[test]
+fn audit_fails_closed_on_undecodable_stream() {
+    // A content stream that cannot be decoded is an audit error, never an empty finding list.
+    let err = audit_redactions(&open(bad_filter_page())).expect_err("audit must fail closed");
+    let msg = err.to_string();
+    assert!(msg.contains("decoded"), "unexpected error: {msg}");
+}
+
+/// A form XObject that draws itself nests without end. The walk can't follow it to the bottom, so
+/// the audit fails rather than report the page clean with a possible cover left unseen.
+#[test]
+fn self_drawing_form_fails_the_audit() {
+    let mut b = Builder::new();
+    b.add("<< /Type /Catalog /Pages 2 0 R >>");
+    b.add("<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+    b.add("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 6 0 R >> /XObject << /X 5 0 R >> >> >>");
+    b.add_stream(b"BT /F1 24 Tf 100 700 Td (SECRET) Tj ET\n/X Do\n");
+    b.add_stream_with(
+        b"0 g\n100 688 220 32 re f\n/X Do\n",
+        "/Type /XObject /Subtype /Form /BBox [0 0 612 792] /Resources << /XObject << /X 5 0 R >> >>",
+    );
+    b.add(FONT);
+    let result = audit_redactions(&open(b.build()));
+    assert!(matches!(result, Err(crate::AuditError::TooDeep)), "{result:?}");
+}
 #[test]
 fn sanitize_report_diffs_metadata() {
     let content = b"BT /F1 24 Tf 100 700 Td (hello) Tj ET\n";
