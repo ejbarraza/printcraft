@@ -27,9 +27,12 @@
 <br>
 
 > [!NOTE]
-> **Fork notice.** This is a security-focused fork of [storytold/printcraft](https://github.com/storytold/printcraft)
+> **Fork notice.** This is a security-focused fork of [storytold/pdfcraft](https://github.com/storytold/pdfcraft)
 > (MIT OR Apache-2.0) by [Erick Barraza](https://github.com/ejbarraza). Upstream built the workbench;
 > this fork adds document-verification tooling: faux-redaction auditing and sanitize-for-sharing.
+> The faux-redaction audit engine was **merged into upstream's main branch on 2026-10-11**
+> ([storytold/pdfcraft#110](https://github.com/storytold/pdfcraft/pull/110)) and now ships as part of
+> PdfCraft itself — sanitize-for-sharing remains a fork-only feature.
 > The ArtCraft name and logos are trademarks of the ArtCraft team and are not used here.
 
 <p align="center">
