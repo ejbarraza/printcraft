@@ -258,7 +258,7 @@ fn sanitize_clean_document_reports_nothing() {
     let report = sanitize_for_sharing(&mut doc).expect("sanitize must run");
     assert_eq!(report.removed_total, 0);
     assert_eq!(report.lines(), vec!["nothing to remove: the document was already clean".to_string()]);
-
+}
 
 #[test]
 fn rectangle_drawn_as_a_path_covers_text_like_re() {
