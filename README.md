@@ -36,7 +36,9 @@
 > this fork adds document-verification tooling: faux-redaction auditing and sanitize-for-sharing.
 > The faux-redaction audit engine was **merged into upstream's main branch on 2026-10-11**
 > ([storytold/pdfcraft#110](https://github.com/storytold/pdfcraft/pull/110)) and now ships as part of
-> PdfCraft itself — sanitize-for-sharing remains a fork-only feature.
+> PdfCraft itself. A follow-up hardening PR ([storytold/pdfcraft#1892](https://github.com/storytold/pdfcraft/pull/1892))
+> was **merged on 2026-10-15**, adding golden tests, stable finding IDs, and depth-limit boundary
+> tests (tests and docs only). Sanitize-for-sharing remains a fork-only feature.
 > The ArtCraft name and logos are trademarks of the ArtCraft team and are not used here.
 
 <p align="center">
