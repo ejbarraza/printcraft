@@ -78,7 +78,8 @@ pub(crate) const INFO_OPTIONS: &[OptionSpec] = &[OptionSpec { name: "--password"
 
 pub(crate) const AUDIT_OPTIONS: &[OptionSpec] = &[OptionSpec { name: "--password", takes_value: true }];
 
-pub(crate) const SANITIZE_OPTIONS: &[OptionSpec] = &[OptionSpec { name: "--password", takes_value: true }, OptionSpec { name: "--out", takes_value: true }];
+pub(crate) const SANITIZE_OPTIONS: &[OptionSpec] =
+    &[OptionSpec { name: "--password", takes_value: true }, OptionSpec { name: "--out", takes_value: true }];
 
 pub(crate) const TEXT_OPTIONS: &[OptionSpec] =
     &[OptionSpec { name: "--page", takes_value: true }, OptionSpec { name: "--password", takes_value: true }];

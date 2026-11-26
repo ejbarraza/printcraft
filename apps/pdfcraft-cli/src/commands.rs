@@ -1,6 +1,6 @@
 use super::options::{
-    COMBINE_OPTIONS, EXTRACT_OPTIONS, INFO_OPTIONS, RENDER_OPTIONS, SANITIZE_OPTIONS, SPLIT_OPTIONS, TEXT_OPTIONS, can_be_path_value, flag, needs_value, positional,
-    validate_options,
+    COMBINE_OPTIONS, EXTRACT_OPTIONS, INFO_OPTIONS, RENDER_OPTIONS, SANITIZE_OPTIONS, SPLIT_OPTIONS, TEXT_OPTIONS, can_be_path_value, flag,
+    needs_value, positional, validate_options,
 };
 use super::{Arc, CliError, ImageFormat, PageRenderer, Path, PathBuf, RenderConfig, RenderRequest, RequestKind, Write, inspect, stdout_line};
 
